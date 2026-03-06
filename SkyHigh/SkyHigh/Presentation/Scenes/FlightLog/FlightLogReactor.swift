@@ -18,22 +18,32 @@ final class FlightLogReactor: Reactor, Stepper {
     enum Action {
         case loadLogs
         case selectLog(FlightLog)
+        case deleteLog(UUID)
         case dismiss
     }
 
     enum Mutation {
         case setLogs([FlightLog])
+        case removeLog(UUID)
         case setLoading(Bool)
         case setError(AppError?)
     }
 
     struct State {
-        var logs: [FlightLog] = []
-        var isLoading: Bool = false
-        var error: AppError? = nil
+        var logs:      [FlightLog] = []
+        var isLoading: Bool        = false
+        var error:     AppError?   = nil
     }
 
     let initialState = State()
+
+    // MARK: - Dependencies
+
+    private let repository: FlightLogRepository
+
+    init(repository: FlightLogRepository) {
+        self.repository = repository
+    }
 
     // MARK: - Mutate
 
@@ -41,9 +51,9 @@ final class FlightLogReactor: Reactor, Stepper {
         switch action {
 
         case .loadLogs:
-            return Observable.concat([
+            return .concat([
                 .just(.setLoading(true)),
-                fetchLogs()
+                repository.fetchAll()
                     .map { .setLogs($0) }
                     .catch { .just(.setError(.coreDataError($0.localizedDescription))) },
                 .just(.setLoading(false))
@@ -52,6 +62,11 @@ final class FlightLogReactor: Reactor, Stepper {
         case .selectLog(let log):
             steps.accept(ControllerStep.flightLogDetailRequired(log: log))
             return .empty()
+
+        case .deleteLog(let id):
+            return repository.delete(id: id)
+                .map { .removeLog(id) }
+                .catch { .just(.setError(.coreDataError($0.localizedDescription))) }
 
         case .dismiss:
             steps.accept(ControllerStep.dashboardRequired)
@@ -62,19 +77,13 @@ final class FlightLogReactor: Reactor, Stepper {
     // MARK: - Reduce
 
     func reduce(state: State, mutation: Mutation) -> State {
-        var newState = state
+        var s = state
         switch mutation {
-        case .setLogs(let logs):    newState.logs = logs
-        case .setLoading(let flag): newState.isLoading = flag
-        case .setError(let e):      newState.error = e
+        case .setLogs(let logs):     s.logs      = logs
+        case .removeLog(let id):     s.logs      = s.logs.filter { $0.id != id }
+        case .setLoading(let flag):  s.isLoading = flag
+        case .setError(let e):       s.error     = e
         }
-        return newState
-    }
-
-    // MARK: - Data (6주차에서 CoreData로 교체)
-
-    private func fetchLogs() -> Observable<[FlightLog]> {
-        // TODO: Week 6 — CoreData 연동
-        return .just([]).delay(.milliseconds(300), scheduler: MainScheduler.instance)
+        return s
     }
 }

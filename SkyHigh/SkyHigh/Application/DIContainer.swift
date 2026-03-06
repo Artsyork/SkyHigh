@@ -14,13 +14,22 @@ final class DIContainer {
 
     private lazy var p2pService = ControllerP2PService()
 
-    private lazy var anomalyDetectionService: AnomalyDetectionServiceProtocol = AnomalyDetectionService()
+    private lazy var anomalyDetectionService: AnomalyDetectionServiceProtocol
+        = AnomalyDetectionService()
 
-    private lazy var claudeAPIService: ClaudeAPIServiceProtocol = ClaudeAPIService()
+    private lazy var claudeAPIService: ClaudeAPIServiceProtocol
+        = ClaudeAPIService()
+
+    private lazy var flightLogRepository: FlightLogRepository
+        = FlightLogRepositoryImpl(stack: .shared)
+
+    private lazy var flightLogServiceImpl: FlightLogServiceProtocol
+        = FlightLogService(repository: flightLogRepository)
 
     // MARK: - Repositories
 
-    private lazy var controllerRepository: ControllerRepository = ControllerRepositoryImpl(p2pService: p2pService)
+    private lazy var controllerRepository: ControllerRepository
+        = ControllerRepositoryImpl(p2pService: p2pService)
 
     // MARK: - Factory Methods
 
@@ -44,5 +53,13 @@ final class DIContainer {
 
     func makeClaudeAPIService() -> ClaudeAPIServiceProtocol {
         claudeAPIService
+    }
+
+    func makeFlightLogRepository() -> FlightLogRepository {
+        flightLogRepository
+    }
+
+    func makeFlightLogService() -> FlightLogServiceProtocol {
+        flightLogServiceImpl
     }
 }

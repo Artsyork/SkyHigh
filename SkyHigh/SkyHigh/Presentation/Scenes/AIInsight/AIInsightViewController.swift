@@ -2,6 +2,7 @@
 //  AIInsightViewController.swift
 //  SkyHigh - ControllerApp
 //
+//  화면 진입 즉시 자동 진단 → 항목 카드 그리드 + AI 종합 소견 표시
 
 import UIKit
 import SnapKit
@@ -17,18 +18,21 @@ final class AIInsightViewController: UIViewController, View {
     // MARK: - UI
 
     // 헤더
-    private let headerView: UIView = {
-        let v = UIView()
-        v.backgroundColor = .clear
-        return v
-    }()
+    private let headerView = UIView()
 
     private let titleLabel: UILabel = {
         let l = UILabel()
-        l.text = "AI 진단"
+        l.text = "AI 비행 진단"
         l.font = .systemFont(ofSize: 17, weight: .semibold)
         l.textColor = .white
         return l
+    }()
+
+    private let refreshButton: UIButton = {
+        var config = UIButton.Configuration.plain()
+        config.image = UIImage(systemName: "arrow.clockwise")
+        config.baseForegroundColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
+        return UIButton(configuration: config)
     }()
 
     private let dismissButton: UIButton = {
@@ -38,84 +42,38 @@ final class AIInsightViewController: UIViewController, View {
         return UIButton(configuration: config)
     }()
 
-    // 텔레메트리 요약 카드
-    private let telemetryCard: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(white: 1, alpha: 0.06)
-        v.layer.cornerRadius = 14
-        v.layer.borderWidth = 1
-        v.layer.borderColor = UIColor(white: 1, alpha: 0.1).cgColor
-        return v
+    // 종합 상태 배너
+    private let statusBanner: StatusBannerView = StatusBannerView()
+
+    // 항목 카드 그리드 (UICollectionView)
+    private lazy var collectionView: UICollectionView = {
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumInteritemSpacing = 12
+        layout.minimumLineSpacing = 12
+        layout.sectionInset = UIEdgeInsets(top: 0, left: 20, bottom: 0, right: 20)
+        let cv = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        cv.backgroundColor = .clear
+        cv.isScrollEnabled = false
+        cv.dataSource = self
+        cv.delegate = self
+        cv.register(DiagnosticItemCell.self, forCellWithReuseIdentifier: DiagnosticItemCell.id)
+        return cv
     }()
 
-    private let telemetryStackView: UIStackView = {
-        let sv = UIStackView()
-        sv.axis = .horizontal
-        sv.distribution = .fillEqually
-        sv.spacing = 1
+    // AI 종합 소견 카드
+    private let summaryCard: AISummaryCard = AISummaryCard()
+
+    // 스크롤 뷰 (전체 레이아웃)
+    private let scrollView: UIScrollView = {
+        let sv = UIScrollView()
+        sv.showsVerticalScrollIndicator = false
         return sv
     }()
+    private let contentView = UIView()
 
-    private let batteryStatView  = TelemetryStat(icon: "battery.100", title: "배터리")
-    private let altitudeStatView = TelemetryStat(icon: "arrow.up", title: "고도")
-    private let speedStatView    = TelemetryStat(icon: "speedometer", title: "속도")
+    // MARK: - Data
 
-    // 채팅 영역
-    private let tableView: UITableView = {
-        let tv = UITableView()
-        tv.backgroundColor = .clear
-        tv.separatorStyle = .none
-        tv.rowHeight = UITableView.automaticDimension
-        tv.estimatedRowHeight = 80
-        tv.keyboardDismissMode = .interactive
-        tv.register(UserBubbleCell.self, forCellReuseIdentifier: UserBubbleCell.id)
-        tv.register(AIBubbleCell.self, forCellReuseIdentifier: AIBubbleCell.id)
-        return tv
-    }()
-
-    // 타이핑 인디케이터
-    private let typingIndicator: UIActivityIndicatorView = {
-        let ai = UIActivityIndicatorView(style: .medium)
-        ai.color = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
-        ai.hidesWhenStopped = true
-        return ai
-    }()
-
-    // 입력창
-    private let inputContainerView: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(white: 1, alpha: 0.06)
-        v.layer.cornerRadius = 24
-        v.layer.borderWidth = 1
-        v.layer.borderColor = UIColor(white: 1, alpha: 0.15).cgColor
-        return v
-    }()
-
-    private let textField: UITextField = {
-        let tf = UITextField()
-        tf.attributedPlaceholder = NSAttributedString(
-            string: "드론 상태에 대해 질문하세요...",
-            attributes: [.foregroundColor: UIColor.systemGray]
-        )
-        tf.textColor = .white
-        tf.font = .systemFont(ofSize: 15)
-        tf.returnKeyType = .send
-        return tf
-    }()
-
-    private let sendButton: UIButton = {
-        var config = UIButton.Configuration.filled()
-        config.image = UIImage(systemName: "paperplane.fill")
-        config.cornerStyle = .capsule
-        config.baseBackgroundColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
-        config.baseForegroundColor = .black
-        config.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
-        return UIButton(configuration: config)
-    }()
-
-    // MARK: - DataSource
-
-    private var messages: [AIInsightReactor.ChatMessage] = []
+    private var diagnosticItems: [AIInsightReactor.DiagnosticItem] = []
 
     // MARK: - Init
 
@@ -131,7 +89,11 @@ final class AIInsightViewController: UIViewController, View {
     override func viewDidLoad() {
         super.viewDidLoad()
         setupUI()
-        setupKeyboardObservers()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateCollectionViewHeight()
     }
 
     // MARK: - Setup
@@ -139,306 +101,410 @@ final class AIInsightViewController: UIViewController, View {
     private func setupUI() {
         view.backgroundColor = UIColor(red: 0.07, green: 0.07, blue: 0.09, alpha: 1)
 
-        [batteryStatView, altitudeStatView, speedStatView]
-            .forEach { telemetryStackView.addArrangedSubview($0) }
-        telemetryCard.addSubview(telemetryStackView)
-
-        inputContainerView.addSubview(textField)
-        inputContainerView.addSubview(sendButton)
-
+        // 헤더
         headerView.addSubview(titleLabel)
+        headerView.addSubview(refreshButton)
         headerView.addSubview(dismissButton)
 
-        [headerView, telemetryCard, tableView,
-         typingIndicator, inputContainerView].forEach { view.addSubview($0) }
+        // 스크롤 내부
+        contentView.addSubview(statusBanner)
+        contentView.addSubview(collectionView)
+        contentView.addSubview(summaryCard)
+        scrollView.addSubview(contentView)
+
+        view.addSubview(headerView)
+        view.addSubview(scrollView)
 
         setupConstraints()
     }
 
     private func setupConstraints() {
         headerView.snp.makeConstraints {
-            $0.top.equalTo(view.safeAreaLayoutGuide).offset(16)
+            $0.top.equalTo(view.safeAreaLayoutGuide).offset(8)
             $0.leading.trailing.equalToSuperview().inset(20)
             $0.height.equalTo(44)
         }
         titleLabel.snp.makeConstraints {
             $0.center.equalToSuperview()
         }
+        refreshButton.snp.makeConstraints {
+            $0.leading.centerY.equalToSuperview()
+            $0.size.equalTo(44)
+        }
         dismissButton.snp.makeConstraints {
             $0.trailing.centerY.equalToSuperview()
             $0.size.equalTo(44)
         }
 
-        telemetryCard.snp.makeConstraints {
-            $0.top.equalTo(headerView.snp.bottom).offset(12)
+        scrollView.snp.makeConstraints {
+            $0.top.equalTo(headerView.snp.bottom).offset(8)
+            $0.leading.trailing.bottom.equalToSuperview()
+        }
+        contentView.snp.makeConstraints {
+            $0.edges.equalToSuperview()
+            $0.width.equalToSuperview()
+        }
+
+        statusBanner.snp.makeConstraints {
+            $0.top.equalToSuperview().offset(8)
             $0.leading.trailing.equalToSuperview().inset(20)
-        }
-        telemetryStackView.snp.makeConstraints {
-            $0.edges.equalToSuperview().inset(12)
-            $0.height.equalTo(64)
+            $0.height.equalTo(72)
         }
 
-        tableView.snp.makeConstraints {
-            $0.top.equalTo(telemetryCard.snp.bottom).offset(12)
+        collectionView.snp.makeConstraints {
+            $0.top.equalTo(statusBanner.snp.bottom).offset(16)
             $0.leading.trailing.equalToSuperview()
-            $0.bottom.equalTo(typingIndicator.snp.top).offset(-8)
+            $0.height.equalTo(280)   // 초기값; updateCollectionViewHeight()로 갱신
         }
 
-        typingIndicator.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(28)
-            $0.bottom.equalTo(inputContainerView.snp.top).offset(-8)
-            $0.height.equalTo(20)
+        summaryCard.snp.makeConstraints {
+            $0.top.equalTo(collectionView.snp.bottom).offset(16)
+            $0.leading.trailing.equalToSuperview().inset(20)
+            $0.bottom.equalToSuperview().offset(-24)
         }
+    }
 
-        inputContainerView.snp.makeConstraints {
-            $0.leading.trailing.equalToSuperview().inset(16)
-            $0.bottom.equalTo(view.safeAreaLayoutGuide).offset(-12)
-            $0.height.equalTo(50)
-        }
-        sendButton.snp.makeConstraints {
-            $0.trailing.equalToSuperview().offset(-6)
-            $0.centerY.equalToSuperview()
-            $0.size.equalTo(38)
-        }
-        textField.snp.makeConstraints {
-            $0.leading.equalToSuperview().offset(16)
-            $0.trailing.equalTo(sendButton.snp.leading).offset(-8)
-            $0.centerY.equalToSuperview()
-        }
+    private func updateCollectionViewHeight() {
+        guard !diagnosticItems.isEmpty else { return }
+        let columns: CGFloat = 2
+        let inset: CGFloat = 20
+        let spacing: CGFloat = 12
+        let itemW = (view.bounds.width - inset * 2 - spacing * (columns - 1)) / columns
+        let itemH: CGFloat = 100
+        let rows = ceil(CGFloat(diagnosticItems.count) / columns)
+        let totalH = rows * itemH + (rows - 1) * spacing
+        collectionView.snp.updateConstraints { $0.height.equalTo(totalH) }
     }
 
     // MARK: - ReactorKit Bind
 
     func bind(reactor: AIInsightReactor) {
 
-        // Actions
-        let sendTap = sendButton.rx.tap.withLatestFrom(textField.rx.text.orEmpty)
-        let returnKey = textField.rx.controlEvent(.editingDidEndOnExit)
-            .withLatestFrom(textField.rx.text.orEmpty)
-
-        Observable.merge(sendTap, returnKey)
-            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-            .do(onNext: { [weak self] _ in self?.textField.text = nil })
-            .map { Reactor.Action.sendQuery($0) }
+        // viewDidLoad → 자동 분석 시작
+        Observable.just(Reactor.Action.startAnalysis)
             .bind(to: reactor.action)
             .disposed(by: disposeBag)
 
+        // 새로고침
+        refreshButton.rx.tap
+            .map { Reactor.Action.refresh }
+            .bind(to: reactor.action)
+            .disposed(by: disposeBag)
+
+        // 닫기
         dismissButton.rx.tap
             .map { Reactor.Action.dismiss }
             .bind(to: reactor.action)
             .disposed(by: disposeBag)
 
-        // States
-        reactor.state.map { $0.messages }
-            .distinctUntilChanged { $0.count == $1.count }
+        // 종합 상태 배너
+        reactor.state.map { $0.overallStatus }
+            .distinctUntilChanged { $0 == $1 }
             .observe(on: MainScheduler.instance)
-            .subscribe(onNext: { [weak self] messages in
-                self?.messages = messages
-                self?.tableView.reloadData()
-                if !messages.isEmpty {
-                    let index = IndexPath(row: messages.count - 1, section: 0)
-                    self?.tableView.scrollToRow(at: index, at: .bottom, animated: true)
-                }
+            .subscribe(onNext: { [weak self] status in
+                self?.statusBanner.configure(status: status)
             })
             .disposed(by: disposeBag)
 
+        // 항목 카드 그리드
+        reactor.state.map { $0.diagnosticItems }
+            .distinctUntilChanged { $0.count == $1.count }
+            .observe(on: MainScheduler.instance)
+            .subscribe(onNext: { [weak self] items in
+                self?.diagnosticItems = items
+                self?.collectionView.reloadData()
+                self?.updateCollectionViewHeight()
+            })
+            .disposed(by: disposeBag)
+
+        // AI 종합 소견
+        reactor.state.map { $0.aiSummary }
+            .distinctUntilChanged()
+            .observe(on: MainScheduler.instance)
+            .subscribe(onNext: { [weak self] summary in
+                self?.summaryCard.setSummary(summary)
+            })
+            .disposed(by: disposeBag)
+
+        // 로딩
         reactor.state.map { $0.isLoading }
             .distinctUntilChanged()
             .observe(on: MainScheduler.instance)
             .subscribe(onNext: { [weak self] loading in
-                loading ? self?.typingIndicator.startAnimating()
-                        : self?.typingIndicator.stopAnimating()
-                self?.sendButton.isEnabled = !loading
+                self?.summaryCard.setLoading(loading)
+                self?.refreshButton.isEnabled = !loading
             })
             .disposed(by: disposeBag)
 
-        reactor.state.compactMap { $0.telemetrySnapshot }
-            .take(1)
+        // 에러
+        reactor.state.compactMap { $0.error }
             .observe(on: MainScheduler.instance)
-            .subscribe(onNext: { [weak self] t in
-                self?.batteryStatView.update(value: "\(Int(t.batteryLevel * 100))%")
-                self?.altitudeStatView.update(value: "\(String(format: "%.0f", t.altitude))m")
-                self?.speedStatView.update(value: "\(String(format: "%.0f", t.speed))km/h")
+            .subscribe(onNext: { [weak self] error in
+                self?.summaryCard.setError(error.localizedDescription)
             })
             .disposed(by: disposeBag)
     }
+}
 
-    // MARK: - Keyboard
+// MARK: - UICollectionViewDataSource / Delegate
 
-    private func setupKeyboardObservers() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillShow),
-            name: UIResponder.keyboardWillShowNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillHide),
-            name: UIResponder.keyboardWillHideNotification, object: nil)
+extension AIInsightViewController: UICollectionViewDataSource, UICollectionViewDelegateFlowLayout {
+
+    func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int {
+        diagnosticItems.count
     }
 
-    @objc private func keyboardWillShow(_ n: Notification) {
-        guard let frame = n.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
-        inputContainerView.snp.updateConstraints {
-            $0.bottom.equalTo(view.safeAreaLayoutGuide).offset(-(frame.height - view.safeAreaInsets.bottom + 12))
-        }
-        UIView.animate(withDuration: 0.3) { self.view.layoutIfNeeded() }
+    func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: DiagnosticItemCell.id, for: indexPath) as! DiagnosticItemCell
+        cell.configure(with: diagnosticItems[indexPath.item])
+        return cell
     }
 
-    @objc private func keyboardWillHide(_ n: Notification) {
-        inputContainerView.snp.updateConstraints {
-            $0.bottom.equalTo(view.safeAreaLayoutGuide).offset(-12)
-        }
-        UIView.animate(withDuration: 0.3) { self.view.layoutIfNeeded() }
+    func collectionView(_ collectionView: UICollectionView,
+                        layout collectionViewLayout: UICollectionViewLayout,
+                        sizeForItemAt indexPath: IndexPath) -> CGSize {
+        let inset: CGFloat = 20
+        let spacing: CGFloat = 12
+        let w = (collectionView.bounds.width - inset * 2 - spacing) / 2
+        return CGSize(width: w, height: 100)
     }
 }
 
-// MARK: - UITableViewDataSource
+// MARK: - StatusBannerView
 
-extension AIInsightViewController: UITableViewDataSource {
+private final class StatusBannerView: UIView {
 
-    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        messages.count
-    }
-
-    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
-        let msg = messages[indexPath.row]
-        switch msg.role {
-        case .user:
-            let cell = tableView.dequeueReusableCell(withIdentifier: UserBubbleCell.id, for: indexPath) as! UserBubbleCell
-            cell.configure(with: msg.content)
-            return cell
-        case .assistant:
-            let cell = tableView.dequeueReusableCell(withIdentifier: AIBubbleCell.id, for: indexPath) as! AIBubbleCell
-            cell.configure(with: msg.content)
-            return cell
-        }
-    }
-}
-
-// MARK: - TelemetryStat
-
-private final class TelemetryStat: UIView {
-
-    private let iconView: UIImageView = {
-        let iv = UIImageView()
-        iv.tintColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
-        iv.contentMode = .scaleAspectFit
-        return iv
+    private let iconLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 28)
+        return l
     }()
 
     private let titleLabel: UILabel = {
         let l = UILabel()
-        l.font = .systemFont(ofSize: 11, weight: .regular)
-        l.textColor = .systemGray
-        l.textAlignment = .center
+        l.font = .systemFont(ofSize: 18, weight: .bold)
+        l.textColor = .white
+        return l
+    }()
+
+    private let subtitleLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 12, weight: .regular)
+        l.textColor = UIColor(white: 1, alpha: 0.6)
+        return l
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        layer.cornerRadius = 16
+        layer.masksToBounds = true
+
+        let textStack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+        textStack.axis = .vertical
+        textStack.spacing = 3
+
+        let mainStack = UIStackView(arrangedSubviews: [iconLabel, textStack])
+        mainStack.axis = .horizontal
+        mainStack.spacing = 14
+        mainStack.alignment = .center
+
+        addSubview(mainStack)
+        mainStack.snp.makeConstraints { $0.center.equalToSuperview() }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(status: AIInsightReactor.OverallStatus) {
+        switch status {
+        case .safe:
+            iconLabel.text    = "✅"
+            titleLabel.text   = "비행 안전"
+            subtitleLabel.text = "모든 항목이 정상 범위입니다"
+            backgroundColor   = UIColor(red: 0.04, green: 0.55, blue: 0.3, alpha: 0.3)
+            layer.borderColor = UIColor(red: 0.13, green: 0.85, blue: 0.45, alpha: 0.4).cgColor
+            layer.borderWidth = 1
+        case .caution:
+            iconLabel.text    = "⚠️"
+            titleLabel.text   = "주의 필요"
+            subtitleLabel.text = "일부 항목을 확인하세요"
+            backgroundColor   = UIColor(red: 0.6, green: 0.35, blue: 0, alpha: 0.3)
+            layer.borderColor = UIColor(red: 1, green: 0.58, blue: 0, alpha: 0.4).cgColor
+            layer.borderWidth = 1
+        case .danger:
+            iconLabel.text    = "🔴"
+            titleLabel.text   = "위험 감지"
+            subtitleLabel.text = "즉시 조치가 필요합니다"
+            backgroundColor   = UIColor(red: 0.6, green: 0.07, blue: 0.07, alpha: 0.3)
+            layer.borderColor = UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 0.5).cgColor
+            layer.borderWidth = 1
+        case .unknown:
+            iconLabel.text    = "🔍"
+            titleLabel.text   = "분석 중..."
+            subtitleLabel.text = "텔레메트리 데이터를 분석하고 있습니다"
+            backgroundColor   = UIColor(white: 1, alpha: 0.06)
+            layer.borderColor = UIColor(white: 1, alpha: 0.1).cgColor
+            layer.borderWidth = 1
+        }
+    }
+}
+
+// MARK: - DiagnosticItemCell
+
+final class DiagnosticItemCell: UICollectionViewCell {
+    static let id = "DiagnosticItemCell"
+
+    private let iconLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 20)
+        return l
+    }()
+
+    private let categoryLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 11, weight: .medium)
+        l.textColor = UIColor(white: 1, alpha: 0.5)
         return l
     }()
 
     private let valueLabel: UILabel = {
         let l = UILabel()
-        l.font = .monospacedSystemFont(ofSize: 16, weight: .semibold)
+        l.font = .monospacedSystemFont(ofSize: 18, weight: .bold)
         l.textColor = .white
-        l.textAlignment = .center
-        l.text = "--"
         return l
     }()
 
-    init(icon: String, title: String) {
-        super.init(frame: .zero)
-        iconView.image = UIImage(systemName: icon)
-        titleLabel.text = title
+    private let messageLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 11)
+        l.textColor = UIColor(white: 1, alpha: 0.6)
+        l.numberOfLines = 2
+        return l
+    }()
 
-        let stack = UIStackView(arrangedSubviews: [iconView, valueLabel, titleLabel])
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.layer.cornerRadius = 14
+        contentView.layer.borderWidth = 1
+        contentView.clipsToBounds = true
+
+        let topStack = UIStackView(arrangedSubviews: [iconLabel, categoryLabel])
+        topStack.axis = .horizontal
+        topStack.spacing = 6
+        topStack.alignment = .center
+
+        let stack = UIStackView(arrangedSubviews: [topStack, valueLabel, messageLabel])
         stack.axis = .vertical
         stack.spacing = 4
-        stack.alignment = .center
+        stack.alignment = .leading
+
+        contentView.addSubview(stack)
+        stack.snp.makeConstraints {
+            $0.edges.equalToSuperview().inset(UIEdgeInsets(top: 14, left: 14, bottom: 14, right: 14))
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func configure(with item: AIInsightReactor.DiagnosticItem) {
+        iconLabel.text     = item.status.icon
+        categoryLabel.text = item.category.rawValue
+        valueLabel.text    = item.value
+        messageLabel.text  = item.message
+
+        switch item.status {
+        case .normal:
+            contentView.backgroundColor = UIColor(white: 1, alpha: 0.05)
+            contentView.layer.borderColor = UIColor(white: 1, alpha: 0.1).cgColor
+            valueLabel.textColor = .white
+        case .warning:
+            contentView.backgroundColor = UIColor(red: 0.6, green: 0.35, blue: 0, alpha: 0.2)
+            contentView.layer.borderColor = UIColor(red: 1, green: 0.58, blue: 0, alpha: 0.35).cgColor
+            valueLabel.textColor = UIColor(red: 1, green: 0.72, blue: 0.3, alpha: 1)
+        case .critical:
+            contentView.backgroundColor = UIColor(red: 0.5, green: 0.05, blue: 0.05, alpha: 0.25)
+            contentView.layer.borderColor = UIColor(red: 1, green: 0.23, blue: 0.19, alpha: 0.4).cgColor
+            valueLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+        }
+    }
+}
+
+// MARK: - AISummaryCard
+
+private final class AISummaryCard: UIView {
+
+    private let headerLabel: UILabel = {
+        let l = UILabel()
+        l.text = "AI 종합 소견"
+        l.font = .systemFont(ofSize: 13, weight: .semibold)
+        l.textColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
+        return l
+    }()
+
+    private let loadingIndicator: UIActivityIndicatorView = {
+        let ai = UIActivityIndicatorView(style: .medium)
+        ai.color = UIColor(red: 0, green: 0.83, blue: 1, alpha: 1)
+        ai.hidesWhenStopped = true
+        return ai
+    }()
+
+    private let summaryLabel: UILabel = {
+        let l = UILabel()
+        l.font = .systemFont(ofSize: 14, weight: .regular)
+        l.textColor = UIColor(white: 1, alpha: 0.85)
+        l.numberOfLines = 0
+        l.lineBreakMode = .byWordWrapping
+        l.text = "분석을 시작하는 중입니다..."
+        return l
+    }()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor(white: 1, alpha: 0.05)
+        layer.cornerRadius = 16
+        layer.borderWidth = 1
+        layer.borderColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 0.2).cgColor
+
+        let topStack = UIStackView(arrangedSubviews: [headerLabel, loadingIndicator])
+        topStack.axis = .horizontal
+        topStack.spacing = 8
+        topStack.alignment = .center
+
+        let divider: UIView = {
+            let v = UIView()
+            v.backgroundColor = UIColor(white: 1, alpha: 0.08)
+            return v
+        }()
+
+        let stack = UIStackView(arrangedSubviews: [topStack, divider, summaryLabel])
+        stack.axis = .vertical
+        stack.spacing = 12
+
         addSubview(stack)
-
-        iconView.snp.makeConstraints { $0.size.equalTo(16) }
-        stack.snp.makeConstraints { $0.center.equalToSuperview() }
+        stack.snp.makeConstraints { $0.edges.equalToSuperview().inset(16) }
+        divider.snp.makeConstraints { $0.height.equalTo(1) }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
-    func update(value: String) { valueLabel.text = value }
-}
-
-// MARK: - Chat Bubble Cells
-
-final class UserBubbleCell: UITableViewCell {
-    static let id = "UserBubbleCell"
-
-    private let bubble: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(red: 0, green: 0.83, blue: 1, alpha: 0.2)
-        v.layer.cornerRadius = 18
-        return v
-    }()
-
-    private let messageLabel: UILabel = {
-        let l = UILabel()
-        l.font = .systemFont(ofSize: 15)
-        l.textColor = .white
-        l.numberOfLines = 0
-        return l
-    }()
-
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = .clear
-        selectionStyle = .none
-        bubble.addSubview(messageLabel)
-        contentView.addSubview(bubble)
-
-        messageLabel.snp.makeConstraints { $0.edges.equalToSuperview().inset(UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)) }
-        bubble.snp.makeConstraints {
-            $0.top.equalToSuperview().offset(4)
-            $0.bottom.equalToSuperview().offset(-4)
-            $0.trailing.equalToSuperview().offset(-16)
-            $0.leading.greaterThanOrEqualToSuperview().offset(60)
+    func setLoading(_ loading: Bool) {
+        if loading {
+            loadingIndicator.startAnimating()
+            summaryLabel.text = "Claude AI가 텔레메트리를 분석하고 있습니다..."
+            summaryLabel.textColor = UIColor(white: 1, alpha: 0.4)
+        } else {
+            loadingIndicator.stopAnimating()
         }
     }
 
-    required init?(coder: NSCoder) { fatalError() }
-
-    func configure(with text: String) { messageLabel.text = text }
-}
-
-final class AIBubbleCell: UITableViewCell {
-    static let id = "AIBubbleCell"
-
-    private let bubble: UIView = {
-        let v = UIView()
-        v.backgroundColor = UIColor(white: 1, alpha: 0.07)
-        v.layer.cornerRadius = 18
-        v.layer.borderWidth = 1
-        v.layer.borderColor = UIColor(white: 1, alpha: 0.1).cgColor
-        return v
-    }()
-
-    private let messageLabel: UILabel = {
-        let l = UILabel()
-        l.font = .systemFont(ofSize: 15)
-        l.textColor = .white
-        l.numberOfLines = 0
-        return l
-    }()
-
-    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
-        super.init(style: style, reuseIdentifier: reuseIdentifier)
-        backgroundColor = .clear
-        selectionStyle = .none
-        bubble.addSubview(messageLabel)
-        contentView.addSubview(bubble)
-
-        messageLabel.snp.makeConstraints { $0.edges.equalToSuperview().inset(UIEdgeInsets(top: 10, left: 14, bottom: 10, right: 14)) }
-        bubble.snp.makeConstraints {
-            $0.top.equalToSuperview().offset(4)
-            $0.bottom.equalToSuperview().offset(-4)
-            $0.leading.equalToSuperview().offset(16)
-            $0.trailing.lessThanOrEqualToSuperview().offset(-60)
-        }
+    func setSummary(_ text: String) {
+        guard !text.isEmpty else { return }
+        summaryLabel.text = text
+        summaryLabel.textColor = UIColor(white: 1, alpha: 0.85)
     }
 
-    required init?(coder: NSCoder) { fatalError() }
-
-    func configure(with text: String) { messageLabel.text = text }
+    func setError(_ message: String) {
+        loadingIndicator.stopAnimating()
+        summaryLabel.text = "⚠️ 분석 실패: \(message)"
+        summaryLabel.textColor = UIColor(red: 1, green: 0.4, blue: 0.4, alpha: 1)
+    }
 }

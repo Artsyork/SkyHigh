@@ -2,6 +2,7 @@
 //  AIInsightReactor.swift
 //  SkyHigh - ControllerApp
 //
+//  화면 진입 즉시 텔레메트리 자동 분석 → 항목별 상태 + AI 종합 소견 표시
 
 import Foundation
 import ReactorKit
@@ -16,48 +17,95 @@ final class AIInsightReactor: Reactor, Stepper {
     // MARK: - MVI Types
 
     enum Action {
-        case sendQuery(String)
+        case startAnalysis   // viewDidLoad 시 자동 호출
+        case refresh         // 새로고침 버튼
         case dismiss
     }
 
     enum Mutation {
-        case appendMessage(ChatMessage)
+        case setDiagnosticItems([DiagnosticItem])
+        case setAISummary(String)
+        case setOverallStatus(OverallStatus)
         case setLoading(Bool)
         case setError(AppError?)
     }
 
     struct State {
-        var messages: [ChatMessage] = []
-        var telemetrySnapshot: Telemetry?
+        var diagnosticItems: [DiagnosticItem] = []
+        var aiSummary: String = ""
+        var overallStatus: OverallStatus = .unknown
         var isLoading: Bool = false
         var error: AppError? = nil
     }
 
-    // MARK: - ChatMessage
+    // MARK: - DiagnosticItem (항목별 상태 카드)
 
-    struct ChatMessage: Identifiable, Equatable {
+    struct DiagnosticItem: Identifiable, Equatable {
         let id: UUID
-        let role: Role
-        let content: String
-        let createdAt: Date
+        let category: Category
+        let status: ItemStatus
+        let value: String      // 현재 수치 (예: "72%", "45.3m")
+        let message: String    // 상태 설명
 
-        enum Role { case user, assistant }
-
-        static func user(_ text: String) -> ChatMessage {
-            ChatMessage(id: UUID(), role: .user, content: text, createdAt: Date())
+        enum Category: String {
+            case battery    = "배터리"
+            case gps        = "GPS"
+            case vibration  = "진동"
+            case latency    = "통신 지연"
+            case altitude   = "고도"
+            case speed      = "속도"
         }
-        static func assistant(_ text: String) -> ChatMessage {
-            ChatMessage(id: UUID(), role: .assistant, content: text, createdAt: Date())
+
+        enum ItemStatus {
+            case normal     // ✅ 정상
+            case warning    // ⚠️ 주의
+            case critical   // 🔴 위험
+
+            var icon: String {
+                switch self {
+                case .normal:   return "✅"
+                case .warning:  return "⚠️"
+                case .critical: return "🔴"
+                }
+            }
+        }
+    }
+
+    // MARK: - OverallStatus
+
+    enum OverallStatus: Equatable {
+        case safe       // 전체 정상
+        case caution    // 일부 주의
+        case danger     // 위험 항목 존재
+        case unknown    // 분석 전
+
+        var title: String {
+            switch self {
+            case .safe:    return "비행 안전"
+            case .caution: return "주의 필요"
+            case .danger:  return "위험 감지"
+            case .unknown: return "분석 중..."
+            }
+        }
+
+        var color: String {
+            switch self {
+            case .safe:    return "00D4FF"
+            case .caution: return "FF9500"
+            case .danger:  return "FF3B30"
+            case .unknown: return "8E8E93"
+            }
         }
     }
 
     // MARK: - Init
 
-    let initialState: State
+    let initialState = State()
+    private let telemetry: Telemetry?
     private let claudeAPIService: ClaudeAPIServiceProtocol
 
     init(telemetry: Telemetry?, claudeAPIService: ClaudeAPIServiceProtocol) {
-        self.initialState = State(telemetrySnapshot: telemetry)
+        self.telemetry = telemetry
         self.claudeAPIService = claudeAPIService
     }
 
@@ -66,15 +114,19 @@ final class AIInsightReactor: Reactor, Stepper {
     func mutate(action: Action) -> Observable<Mutation> {
         switch action {
 
-        case .sendQuery(let query):
-            guard !query.trimmingCharacters(in: .whitespaces).isEmpty else { return .empty() }
-            let userMsg = ChatMessage.user(query)
+        case .startAnalysis, .refresh:
+            guard let t = telemetry else {
+                return .just(.setError(.aiAnalysisFailed("텔레메트리 데이터 없음")))
+            }
+            let items = buildDiagnosticItems(from: t)
+            let overall = computeOverallStatus(from: items)
 
             return Observable.concat([
-                .just(.appendMessage(userMsg)),
+                .just(.setDiagnosticItems(items)),
+                .just(.setOverallStatus(overall)),
                 .just(.setLoading(true)),
-                fetchAIResponse(query: query)
-                    .map { .appendMessage(ChatMessage.assistant($0)) }
+                fetchAISummary(telemetry: t, items: items)
+                    .map { .setAISummary($0) }
                     .catch { .just(.setError(.aiAnalysisFailed($0.localizedDescription))) },
                 .just(.setLoading(false))
             ])
@@ -90,52 +142,97 @@ final class AIInsightReactor: Reactor, Stepper {
     func reduce(state: State, mutation: Mutation) -> State {
         var newState = state
         switch mutation {
-        case .appendMessage(let msg): newState.messages.append(msg)
-        case .setLoading(let flag):   newState.isLoading = flag
-        case .setError(let e):        newState.error = e
+        case .setDiagnosticItems(let items):    newState.diagnosticItems = items
+        case .setAISummary(let summary):        newState.aiSummary = summary
+        case .setOverallStatus(let status):     newState.overallStatus = status
+        case .setLoading(let flag):             newState.isLoading = flag
+        case .setError(let e):                  newState.error = e
         }
         return newState
     }
 
-    // MARK: - Claude API 호출
+    // MARK: - 항목별 진단 (로컬, 즉시)
 
-    private func fetchAIResponse(query: String) -> Observable<String> {
-        let history = currentState.messages.map {
-            ClaudeMessage(
-                role: $0.role == .user ? "user" : "assistant",
-                content: $0.content
-            )
-        }
-        let newMessage = ClaudeMessage(role: "user", content: query)
-        let allMessages = history + [newMessage]
-
-        return claudeAPIService.sendMessage(
-            systemPrompt: buildSystemPrompt(),
-            messages: allMessages
-        )
-        .observe(on: MainScheduler.instance)
+    private func buildDiagnosticItems(from t: Telemetry) -> [DiagnosticItem] {
+        [
+            makeBatteryItem(t),
+            makeGPSItem(t),
+            makeVibrationItem(t),
+            makeLatencyItem(t),
+            makeAltitudeItem(t),
+            makeSpeedItem(t)
+        ]
     }
 
-    private func buildSystemPrompt() -> String {
-        var prompt = """
-        당신은 드론 비행 전문가 AI 어시스턴트입니다.
-        실시간 텔레메트리 데이터를 분석하여 이상 징후를 감지하고 조종사에게 명확한 조언을 제공합니다.
-        응답은 한국어로 작성하며, 중요 경고는 ⚠️, 정상 상태는 ✅, 제안은 💡 이모지로 시작하세요.
-        기술적 조언은 간결하고 실용적으로 제공하세요.
+    private func makeBatteryItem(_ t: Telemetry) -> DiagnosticItem {
+        let pct = Int(t.batteryLevel * 100)
+        let status: DiagnosticItem.ItemStatus = pct > 50 ? .normal : pct > 20 ? .warning : .critical
+        let msg = pct > 50 ? "충분한 배터리" : pct > 20 ? "배터리 부족 예상" : "즉시 귀환 권장"
+        return DiagnosticItem(id: UUID(), category: .battery, status: status, value: "\(pct)%", message: msg)
+    }
+
+    private func makeGPSItem(_ t: Telemetry) -> DiagnosticItem {
+        guard let gps = t.location else {
+            return DiagnosticItem(id: UUID(), category: .gps, status: .critical, value: "없음", message: "GPS 신호 없음")
+        }
+        let status: DiagnosticItem.ItemStatus = gps.satelliteCount >= 8 ? .normal : gps.satelliteCount >= 4 ? .warning : .critical
+        let msg = gps.satelliteCount >= 8 ? "GPS 신호 양호" : gps.satelliteCount >= 4 ? "신호 불안정" : "GPS 신호 부족"
+        return DiagnosticItem(id: UUID(), category: .gps, status: status, value: "위성 \(gps.satelliteCount)개", message: msg)
+    }
+
+    private func makeVibrationItem(_ t: Telemetry) -> DiagnosticItem {
+        let v = t.vibrationIntensity
+        let status: DiagnosticItem.ItemStatus = v < 1.0 ? .normal : v < 2.5 ? .warning : .critical
+        let msg = v < 1.0 ? "진동 정상" : v < 2.5 ? "진동 수치 증가" : "진동 임계값 초과"
+        return DiagnosticItem(id: UUID(), category: .vibration, status: status, value: String(format: "%.2fg", v), message: msg)
+    }
+
+    private func makeLatencyItem(_ t: Telemetry) -> DiagnosticItem {
+        let l = t.latency
+        let status: DiagnosticItem.ItemStatus = l < 100 ? .normal : l < 300 ? .warning : .critical
+        let msg = l < 100 ? "통신 지연 양호" : l < 300 ? "지연 증가 감지" : "통신 불안정"
+        return DiagnosticItem(id: UUID(), category: .latency, status: status, value: String(format: "%.0fms", l), message: msg)
+    }
+
+    private func makeAltitudeItem(_ t: Telemetry) -> DiagnosticItem {
+        let alt = t.altitude
+        let status: DiagnosticItem.ItemStatus = alt < 100 ? .normal : alt < 150 ? .warning : .critical
+        let msg = alt < 100 ? "고도 정상 범위" : alt < 150 ? "고고도 주의" : "최대 고도 초과"
+        return DiagnosticItem(id: UUID(), category: .altitude, status: status, value: String(format: "%.1fm", alt), message: msg)
+    }
+
+    private func makeSpeedItem(_ t: Telemetry) -> DiagnosticItem {
+        let s = t.speed
+        let status: DiagnosticItem.ItemStatus = s < 40 ? .normal : s < 60 ? .warning : .critical
+        let msg = s < 40 ? "속도 정상" : s < 60 ? "고속 주의" : "최대 속도 초과"
+        return DiagnosticItem(id: UUID(), category: .speed, status: status, value: String(format: "%.1fkm/h", s), message: msg)
+    }
+
+    private func computeOverallStatus(from items: [DiagnosticItem]) -> OverallStatus {
+        if items.contains(where: { $0.status == .critical }) { return .danger }
+        if items.contains(where: { $0.status == .warning })  { return .caution }
+        return .safe
+    }
+
+    // MARK: - Claude AI 종합 소견 (비동기)
+
+    private func fetchAISummary(telemetry t: Telemetry, items: [DiagnosticItem]) -> Observable<String> {
+        let itemsSummary = items.map {
+            "\($0.category.rawValue): \($0.status.icon) \($0.value) — \($0.message)"
+        }.joined(separator: "\n")
+
+        let prompt = """
+        아래는 드론의 현재 텔레메트리 진단 결과입니다.
+        종합적인 비행 안전 소견을 2~3문장으로 간결하게 작성해주세요.
+        이상 항목이 있다면 우선순위를 정해 조치 방법을 제안하세요.
+
+        \(itemsSummary)
         """
 
-        if let t = currentState.telemetrySnapshot {
-            prompt += """
-
-            --- 현재 텔레메트리 스냅샷 ---
-            배터리: \(Int(t.batteryLevel * 100))%
-            고도: \(String(format: "%.1f", t.altitude))m
-            속도: \(String(format: "%.1f", t.speed))km/h
-            진동: \(String(format: "%.2f", t.vibrationIntensity))g
-            지연: \(String(format: "%.0f", t.latency))ms
-            GPS: \(t.location.map { "위도 \(String(format: "%.4f", $0.latitude)), 경도 \(String(format: "%.4f", $0.longitude)), 위성 \($0.satelliteCount)개" } ?? "신호 없음")
-            """
-        }
-        return prompt
+        return claudeAPIService.sendMessage(
+            systemPrompt: "당신은 드론 비행 안전 전문가입니다. 진단 결과를 바탕으로 핵심만 간결하게 한국어로 답변하세요.",
+            messages: [ClaudeMessage(role: "user", content: prompt)]
+        )
+        .observe(on: MainScheduler.instance)
     }
 }

@@ -31,17 +31,30 @@ struct AIAnalysisResult: Identifiable, Equatable {
     let telemetrySnapshot: Telemetry?
 }
 
+// MARK: - TelemetryPoint
+
+/// 비행 중 샘플링된 텔레메트리 스냅샷 (고도 차트 & GPS 경로 공용)
+struct TelemetryPoint: Identifiable, Equatable {
+    let id:           UUID
+    let timestamp:    Date
+    let altitude:     Double    // m
+    let speed:        Double    // km/h
+    let batteryLevel: Float     // 0.0 ~ 1.0
+    let latitude:     Double?   // nil = GPS 없음
+    let longitude:    Double?
+}
+
 // MARK: - FlightLog
 
 struct FlightLog: Identifiable, Equatable {
-    let id: UUID
-    let startedAt: Date
-    let endedAt: Date?
-    let maxAltitude: Double
-    let avgAltitude: Double
-    let avgBatteryDrain: Float
-    let anomalyEvents: [AnomalyAlert]
-    let gpsPath: [GPSLocation]
+    let id:              UUID
+    let startedAt:       Date
+    let endedAt:         Date?
+    let maxAltitude:     Double
+    let avgAltitude:     Double
+    let avgBatteryDrain: Float       // 소모량 (0.0 ~ 1.0)
+    let anomalyEvents:   [AnomalyAlert]
+    let telemetryPoints: [TelemetryPoint]   // Week 6: CoreData 기반
 
     var duration: TimeInterval? {
         guard let endedAt else { return nil }
@@ -49,6 +62,14 @@ struct FlightLog: Identifiable, Equatable {
     }
 
     var anomalyCount: Int { anomalyEvents.count }
+
+    /// GPS 좌표가 유효한 포인트만 추출 (MapKit 경로용)
+    var gpsPath: [(latitude: Double, longitude: Double)] {
+        telemetryPoints.compactMap { point in
+            guard let lat = point.latitude, let lon = point.longitude else { return nil }
+            return (lat, lon)
+        }
+    }
 }
 
 // MARK: - AppError

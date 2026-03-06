@@ -71,7 +71,7 @@ final class DashboardFlow: Flow {
     }
 
     private func showFlightLog() -> FlowContributors {
-        let reactor = FlightLogReactor()
+        let reactor = FlightLogReactor(repository: container.makeFlightLogRepository())
         let vc = FlightLogViewController(reactor: reactor)
         rootViewController.pushViewController(vc, animated: true)
         return .one(flowContributor: .contribute(
