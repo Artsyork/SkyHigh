@@ -4,8 +4,10 @@
 //
 
 import Foundation
+import MultipeerConnectivity
 import ReactorKit
 import RxSwift
+import RxRelay
 import RxFlow
 
 final class StandbyReactor: Reactor, Stepper {
@@ -21,9 +23,11 @@ final class StandbyReactor: Reactor, Stepper {
     // MARK: - UseCases
     private let startBroadcastUseCase: StartBroadcastUseCase
     private let acceptConnectionUseCase: AcceptConnectionUseCase
+    private let droneRepository: DroneRepository
     private let disposeBag = DisposeBag()
 
     init(repository: DroneRepository) {
+        self.droneRepository = repository
         self.startBroadcastUseCase = StartBroadcastUseCase(repository: repository)
         self.acceptConnectionUseCase = AcceptConnectionUseCase(repository: repository)
     }
@@ -32,13 +36,14 @@ final class StandbyReactor: Reactor, Stepper {
 
     func mutate(action: Action) -> Observable<Mutation> {
         switch action {
+
         case .startBroadcast:
             return startBroadcastUseCase.execute()
-                .map { _ in .setConnectionState(.scanning) }
+                .map { _ in DroneMutation.setConnectionState(.scanning) }
 
         case .acceptConnection(let peerID):
             acceptConnectionUseCase.execute(peerID: peerID)
-            return repository.connectionState
+            return droneRepository.connectionState
                 .do(onNext: { [weak self] state in
                     if state.isConnected {
                         self?.steps.accept(DroneStep.streamingStarted)
@@ -46,10 +51,12 @@ final class StandbyReactor: Reactor, Stepper {
                 })
                 .map { .setConnectionState($0) }
 
-        case .rejectConnection:
+        case .rejectConnection(let peerID):
+            droneRepository.reject(peerID: peerID)
             return .empty()
 
         case .disconnect:
+            droneRepository.disconnect()
             return .just(.setConnectionState(.disconnected))
 
         default:
@@ -67,19 +74,5 @@ final class StandbyReactor: Reactor, Stepper {
         default: break
         }
         return newState
-    }
-
-    // repository 참조 보관
-    private var repository: DroneRepository {
-        startBroadcastUseCase.repository
-    }
-}
-
-// MARK: - UseCase 접근용 extension
-private extension StartBroadcastUseCase {
-    var repository: DroneRepository { _repository }
-    private var _repository: DroneRepository {
-        // DI를 통해 주입된 repository 반환 (실제 구현에서는 DI Container 사용)
-        fatalError("DI Container를 통해 주입하세요")
     }
 }

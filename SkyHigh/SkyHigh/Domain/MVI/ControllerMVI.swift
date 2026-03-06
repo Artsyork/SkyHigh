@@ -23,8 +23,8 @@ enum ControllerIntent {
     // 명령 송신
     case sendCommand(DroneCommand)
 
-    // 이상 감지
-    case detectAnomaly
+    // 이상 감지 (AnomalyDetectionService → Reactor)
+    case detectAnomaly(AnomalyAlert)
 
     // AI 진단
     case requestAIAnalysis(query: String)

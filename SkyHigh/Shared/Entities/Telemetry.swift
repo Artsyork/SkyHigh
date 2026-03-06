@@ -50,6 +50,7 @@ struct Gyroscope: Codable, Equatable {
 struct GPSLocation: Codable, Equatable {
     let latitude: Double
     let longitude: Double
+    let satelliteCount: Int   // 수신 위성 수 (GPS 신호 품질 지표)
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
