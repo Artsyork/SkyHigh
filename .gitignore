@@ -115,6 +115,6 @@ xcuserdata
 **/xcshareddata/WorkspaceSettings.xcsettings
 
 ### Files
-/Domain/Network/BaseURL
+**/Domain/Network/BaseURL.swift
 
 # End of https://www.toptal.com/developers/gitignore/api/swift,cocoapods,xcode,swiftpackagemanager,swiftpm
